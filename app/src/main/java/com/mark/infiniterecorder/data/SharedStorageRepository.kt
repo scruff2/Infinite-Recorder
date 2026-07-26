@@ -16,6 +16,7 @@ import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import org.json.JSONArray
 import org.json.JSONObject
 
 class SharedStorageRepository(
@@ -283,6 +284,76 @@ class SharedStorageRepository(
         return recovered
     }
 
+    @Synchronized
+    fun markSessionInterrupted(
+        sessionStartedAtMs: Long,
+        detectedAtMs: Long,
+        savedAudioDurationMs: Long,
+        currentFile: String,
+        message: String,
+    ): Boolean {
+        if (sessionStartedAtMs <= 0L) return false
+        val zone = ZoneId.systemDefault()
+        val day = Instant.ofEpochMilli(sessionStartedAtMs).atZone(zone).format(dayFormatter)
+        val root = readPrivateManifest(day)
+            ?: readDailyManifest(day)?.let { runCatching { JSONObject(it) }.getOrNull() }
+            ?: return false
+        val sessions = root.optJSONArray("sessions") ?: return false
+        val expectedStart = Instant.ofEpochMilli(sessionStartedAtMs).toString()
+        var interruptedSession: JSONObject? = null
+        for (index in sessions.length() - 1 downTo 0) {
+            val candidate = sessions.optJSONObject(index) ?: continue
+            if (
+                candidate.optString("startedUtc") == expectedStart ||
+                candidate.optString("status") == "Active"
+            ) {
+                interruptedSession = candidate
+                break
+            }
+        }
+        val session = interruptedSession ?: return false
+        if (session.optString("interruptionDetectedUtc").isNotBlank()) return true
+
+        val detected = Instant.ofEpochMilli(detectedAtMs)
+        session.put("status", "Interrupted")
+        session.put("interruptionDetectedUtc", detected.toString())
+        session.put(
+            "interruptionDetectedLocal",
+            detected.atZone(zone).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+        )
+        session.put("savedAudioDurationMs", savedAudioDurationMs.coerceAtLeast(0L))
+        if (currentFile.isNotBlank()) session.put("interruptedFile", currentFile)
+
+        val errors = session.optJSONArray("errors") ?: JSONArray().also {
+            session.put("errors", it)
+        }
+        errors.put(
+            JSONObject().apply {
+                put("utc", detected.toString())
+                put(
+                    "local",
+                    detected.atZone(zone).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+                )
+                put("type", "UnexpectedTermination")
+                put("message", message)
+            },
+        )
+
+        val segments = session.optJSONArray("segments")
+        if (segments != null) {
+            for (index in 0 until segments.length()) {
+                val segment = segments.optJSONObject(index) ?: continue
+                if (segment.optString("status") == "Writing") {
+                    segment.put("status", "Interrupted")
+                    segment.put("recoveryStatus", "Pending")
+                    segment.put("interruptionDetectedUtc", detected.toString())
+                }
+            }
+        }
+        writeManifestCopies(day, root.toString(2))
+        return true
+    }
+
     fun writeDailyManifest(day: String, json: String) {
         val name = "session_$day.json"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -422,7 +493,9 @@ class SharedStorageRepository(
 
     fun cleanupEmptyDailyMetadata(): Int {
         val daysWithAudio = listRecordings().mapTo(mutableSetOf()) { it.day }
-        val emptyDays = listManifestDays().filterNot(daysWithAudio::contains)
+        val emptyDays = listManifestDays()
+            .filterNot(daysWithAudio::contains)
+            .filter(::canDiscardEmptyManifest)
         return emptyDays.count { deleteDailyMetadata(it) }
     }
 
@@ -460,6 +533,30 @@ class SharedStorageRepository(
             if (stream != null) atomicFile.failWrite(stream)
         }
         writeDailyManifest(day, json)
+    }
+
+    private fun readPrivateManifest(day: String): JSONObject? {
+        val atomicFile = AtomicFile(File(context.filesDir, "timeline-$day.json"))
+        val json = runCatching {
+            atomicFile.openRead().bufferedReader(Charsets.UTF_8).use { it.readText() }
+        }.getOrNull() ?: return null
+        return runCatching { JSONObject(json) }
+            .getOrNull()
+            ?.takeIf { it.optString("day") == day && it.has("sessions") }
+    }
+
+    private fun canDiscardEmptyManifest(day: String): Boolean {
+        val root = readPrivateManifest(day)
+            ?: readDailyManifest(day)?.let { runCatching { JSONObject(it) }.getOrNull() }
+            ?: return true
+        val sessions = root.optJSONArray("sessions") ?: return true
+        for (index in 0 until sessions.length()) {
+            val session = sessions.optJSONObject(index) ?: continue
+            if (session.optString("status") == "Interrupted") return false
+            if ((session.optJSONArray("errors")?.length() ?: 0) > 0) return false
+            if ((session.optJSONArray("bookmarks")?.length() ?: 0) > 0) return false
+        }
+        return true
     }
 
     private fun deleteDailyMetadata(day: String): Boolean {

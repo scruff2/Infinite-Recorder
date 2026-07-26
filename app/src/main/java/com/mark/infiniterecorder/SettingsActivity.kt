@@ -45,6 +45,7 @@ class SettingsActivity : Activity() {
             sensitivities.indexOf(settings.sensitivity).coerceAtLeast(1),
         )
         binding.silenceSwitch.isChecked = settings.silenceSuppression
+        binding.pocketProtectionSwitch.isChecked = settings.pocketProtection
 
         binding.bitrateSpinner.onItemSelectedListener = selectionListener {
             settings.bitrate = bitrateValues[it]
@@ -57,6 +58,9 @@ class SettingsActivity : Activity() {
         }
         binding.silenceSwitch.setOnCheckedChangeListener { _, checked ->
             if (!loading) settings.silenceSuppression = checked
+        }
+        binding.pocketProtectionSwitch.setOnCheckedChangeListener { _, checked ->
+            if (!loading) settings.pocketProtection = checked
         }
         binding.root.post { loading = false }
     }

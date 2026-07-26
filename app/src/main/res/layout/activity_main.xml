@@ -164,6 +164,18 @@
                 android:textSize="14sp"
                 android:visibility="gone" />
 
+            <TextView
+                android:id="@+id/pocketProtectionText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:background="#FFE5F4EA"
+                android:padding="14dp"
+                android:text="Pocket Lock ready"
+                android:textColor="#FF176B36"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
             <Button
                 android:id="@+id/startPauseButton"
                 style="@style/PrimaryButton"
@@ -195,7 +207,7 @@
                     android:layout_width="0dp"
                     android:layout_weight="1"
                     android:enabled="false"
-                    android:text="Stop" />
+                    android:text="Hold to stop" />
             </LinearLayout>
 
             <LinearLayout

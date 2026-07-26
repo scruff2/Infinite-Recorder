@@ -13,7 +13,11 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
+import android.view.View
 import android.widget.EditText
+import android.widget.Toast
 import com.mark.infiniterecorder.data.SettingsRepository
 import com.mark.infiniterecorder.data.SharedStorageRepository
 import com.mark.infiniterecorder.databinding.ActivityMainBinding
@@ -27,6 +31,8 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private var snapshot = RecordingSnapshot()
     private var pendingStart = false
+    private val protectedHoldRunnables = mutableMapOf<View, Runnable>()
+    private val completedProtectedHolds = mutableSetOf<View>()
 
     private val stateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -53,24 +59,28 @@ class MainActivity : Activity() {
         setContentView(binding.root)
         applySystemBarInsets(binding.root)
 
-        binding.startPauseButton.setOnClickListener {
-            when (snapshot.state) {
-                RecorderState.IDLE, RecorderState.ERROR -> requestPermissionsAndStart()
-                RecorderState.PAUSED ->
-                    startService(RecordingContract.serviceIntent(this, RecordingContract.ACTION_RESUME))
-                RecorderState.PREPARING,
-                RecorderState.LISTENING,
-                RecorderState.RECORDING_SOUND,
-                RecorderState.SILENCE_SUPPRESSED,
-                -> startService(
-                    RecordingContract.serviceIntent(this, RecordingContract.ACTION_PAUSE),
+        binding.startPauseButton.setOnClickListener { handleStartPauseClick() }
+        binding.stopButton.setOnClickListener { handleStopClick() }
+        installProtectedHold(
+            binding.startPauseButton,
+            shouldProtect = {
+                PocketProtectionPolicy.protectsPause(
+                    SettingsRepository(this).pocketProtection,
+                    snapshot.state,
                 )
-                RecorderState.STOPPING -> Unit
-            }
-        }
-        binding.stopButton.setOnClickListener {
-            startService(RecordingContract.serviceIntent(this, RecordingContract.ACTION_STOP))
-        }
+            },
+            onHeld = ::showPauseConfirmation,
+        )
+        installProtectedHold(
+            binding.stopButton,
+            shouldProtect = {
+                PocketProtectionPolicy.protectsStop(
+                    SettingsRepository(this).pocketProtection,
+                    snapshot.state,
+                )
+            },
+            onHeld = ::showStopConfirmation,
+        )
         binding.bookmarkButton.setOnClickListener { showBookmarkDialog() }
         binding.recordingsButton.setOnClickListener {
             startActivity(Intent(this, RecordingsActivity::class.java))
@@ -93,6 +103,7 @@ class MainActivity : Activity() {
         snapshot = RecordingContract.loadSnapshot(this)
         val claimsActive = snapshot.state !in setOf(RecorderState.IDLE, RecorderState.ERROR)
         if (claimsActive && !RecordingService.isRunning) {
+            val interruptedSnapshot = snapshot
             snapshot = snapshot.copy(
                 state = RecorderState.ERROR,
                 soundLevel = 0,
@@ -100,7 +111,7 @@ class MainActivity : Activity() {
                     "Any incomplete file is being preserved as a partial recording.",
             )
             RecordingContract.saveSnapshot(this, snapshot)
-            recoverInterruptedOutput()
+            recoverInterruptedOutput(interruptedSnapshot)
         }
         render()
         refreshStorage()
@@ -109,8 +120,150 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         handler.removeCallbacks(ticker)
+        cancelProtectedHolds()
         runCatching { unregisterReceiver(stateReceiver) }
         super.onStop()
+    }
+
+    private fun handleStartPauseClick() {
+        when (snapshot.state) {
+            RecorderState.IDLE, RecorderState.ERROR -> requestPermissionsAndStart()
+            RecorderState.PAUSED ->
+                startService(RecordingContract.serviceIntent(this, RecordingContract.ACTION_RESUME))
+            RecorderState.PREPARING,
+            RecorderState.LISTENING,
+            RecorderState.RECORDING_SOUND,
+            RecorderState.SILENCE_SUPPRESSED,
+            -> {
+                if (
+                    PocketProtectionPolicy.protectsPause(
+                        SettingsRepository(this).pocketProtection,
+                        snapshot.state,
+                    )
+                ) {
+                    showPauseConfirmation()
+                } else {
+                    pauseRecording()
+                }
+            }
+            RecorderState.STOPPING -> Unit
+        }
+    }
+
+    private fun handleStopClick() {
+        if (
+            PocketProtectionPolicy.protectsStop(
+                SettingsRepository(this).pocketProtection,
+                snapshot.state,
+            )
+        ) {
+            showStopConfirmation()
+        } else {
+            stopRecording()
+        }
+    }
+
+    private fun pauseRecording() {
+        startService(RecordingContract.serviceIntent(this, RecordingContract.ACTION_PAUSE))
+    }
+
+    private fun stopRecording() {
+        startService(RecordingContract.serviceIntent(this, RecordingContract.ACTION_STOP))
+    }
+
+    private fun showPauseConfirmation() {
+        AlertDialog.Builder(this)
+            .setTitle("Pause recording?")
+            .setMessage(
+                "Microphone capture will stop until you resume. " +
+                    "Paused time will be omitted from the saved audio.",
+            )
+            .setPositiveButton("Pause") { _, _ -> pauseRecording() }
+            .setNegativeButton("Keep recording", null)
+            .show()
+    }
+
+    private fun showStopConfirmation() {
+        AlertDialog.Builder(this)
+            .setTitle("Stop recording?")
+            .setMessage("This ends the session and safely finalizes the current recording.")
+            .setPositiveButton("Stop") { _, _ -> stopRecording() }
+            .setNegativeButton("Keep recording", null)
+            .show()
+    }
+
+    // Accessibility services still use the normal click listener, which opens the same
+    // confirmation dialog. Touch input is deliberately intercepted until the hold completes.
+    @SuppressLint("ClickableViewAccessibility")
+    private fun installProtectedHold(
+        view: View,
+        shouldProtect: () -> Boolean,
+        onHeld: () -> Unit,
+    ) {
+        view.setOnTouchListener { target, event ->
+            if (!shouldProtect()) {
+                cancelProtectedHold(target)
+                return@setOnTouchListener false
+            }
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    cancelProtectedHold(target)
+                    completedProtectedHolds.remove(target)
+                    target.isPressed = true
+                    val action = Runnable {
+                        protectedHoldRunnables.remove(target)
+                        if (shouldProtect()) {
+                            completedProtectedHolds.add(target)
+                            target.isPressed = false
+                            target.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                            onHeld()
+                        }
+                    }
+                    protectedHoldRunnables[target] = action
+                    target.postDelayed(action, PocketProtectionPolicy.HOLD_DURATION_MS)
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (
+                        event.x < 0f ||
+                        event.y < 0f ||
+                        event.x > target.width.toFloat() ||
+                        event.y > target.height.toFloat()
+                    ) {
+                        cancelProtectedHold(target)
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val completed = completedProtectedHolds.remove(target)
+                    cancelProtectedHold(target)
+                    if (!completed) {
+                        Toast.makeText(
+                            this,
+                            "Pocket Lock: hold for 2 seconds, then confirm.",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    completedProtectedHolds.remove(target)
+                    cancelProtectedHold(target)
+                    true
+                }
+                else -> true
+            }
+        }
+    }
+
+    private fun cancelProtectedHold(view: View) {
+        protectedHoldRunnables.remove(view)?.let(view::removeCallbacks)
+        view.isPressed = false
+    }
+
+    private fun cancelProtectedHolds() {
+        protectedHoldRunnables.keys.toList().forEach(::cancelProtectedHold)
+        completedProtectedHolds.clear()
     }
 
     override fun onRequestPermissionsResult(
@@ -189,6 +342,7 @@ class MainActivity : Activity() {
             RecorderState.ERROR,
             RecorderState.STOPPING,
         )
+        val pocketProtection = SettingsRepository(this).pocketProtection
         binding.statusText.text = statusTitle(snapshot.state)
         binding.statusDetailText.text = statusDetail(snapshot.state)
         binding.soundLevel.progress = snapshot.soundLevel
@@ -197,11 +351,25 @@ class MainActivity : Activity() {
             RecorderState.IDLE, RecorderState.ERROR -> "Start recording"
             RecorderState.PAUSED -> "Resume recording"
             RecorderState.STOPPING -> "Finalizing…"
-            else -> "Pause recording"
+            else -> if (
+                PocketProtectionPolicy.protectsPause(pocketProtection, snapshot.state)
+            ) {
+                "Hold 2 sec to pause"
+            } else {
+                "Pause recording"
+            }
         }
         binding.startPauseButton.isEnabled = snapshot.state != RecorderState.STOPPING
         binding.stopButton.isEnabled = active
+        binding.stopButton.text = if (
+            PocketProtectionPolicy.protectsStop(pocketProtection, snapshot.state)
+        ) {
+            "Hold 2 sec to stop"
+        } else {
+            "Stop"
+        }
         binding.bookmarkButton.isEnabled = active || snapshot.state == RecorderState.PAUSED
+        renderPocketProtection(pocketProtection)
         binding.errorText.apply {
             if (snapshot.error.isBlank()) {
                 visibility = android.view.View.GONE
@@ -212,6 +380,27 @@ class MainActivity : Activity() {
         }
         renderStorage()
         renderDurations()
+    }
+
+    private fun renderPocketProtection(enabled: Boolean) {
+        binding.pocketProtectionText.apply {
+            if (enabled) {
+                setBackgroundColor(0xFFE5F4EA.toInt())
+                setTextColor(0xFF176B36.toInt())
+                text = when {
+                    PocketProtectionPolicy.protectsPause(true, snapshot.state) ->
+                        "Pocket Lock on — hold Pause or Stop for 2 seconds, then confirm"
+                    snapshot.state == RecorderState.PAUSED ->
+                        "Pocket Lock on — Stop remains protected; Resume is immediate"
+                    else ->
+                        "Pocket Lock ready — Pause and Stop will require a 2-second hold"
+                }
+            } else {
+                setBackgroundColor(0xFFFFF4E5.toInt())
+                setTextColor(0xFF8A4B08.toInt())
+                text = "Pocket Lock off — Pause and Stop respond immediately"
+            }
+        }
     }
 
     private fun renderDurations() {
@@ -268,16 +457,31 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun recoverInterruptedOutput() {
+    private fun recoverInterruptedOutput(interruptedSnapshot: RecordingSnapshot) {
         thread(name = "InfiniteRecorder-Recovery") {
+            val metadataMarked = runCatching {
+                SharedStorageRepository(this).markSessionInterrupted(
+                    sessionStartedAtMs = interruptedSnapshot.sessionStartedAtMs,
+                    detectedAtMs = System.currentTimeMillis(),
+                    savedAudioDurationMs = interruptedSnapshot.savedAudioDurationMs,
+                    currentFile = interruptedSnapshot.currentFile,
+                    message = "Android terminated the recording service unexpectedly.",
+                )
+            }.getOrDefault(false)
             val recovered = runCatching {
                 SharedStorageRepository(this).recoverInterruptedOutputs()
             }.getOrDefault(emptyList())
-            if (recovered.isNotEmpty()) {
+            if (recovered.isNotEmpty() || metadataMarked) {
                 runOnUiThread {
+                    if (snapshot.state != RecorderState.ERROR) return@runOnUiThread
                     snapshot = snapshot.copy(
-                        error = "Android interrupted the previous recording. " +
-                            "${recovered.size} incomplete file(s) were preserved and clearly marked partial.",
+                        error = if (recovered.isNotEmpty()) {
+                            "Android interrupted the previous recording. " +
+                                "${recovered.size} incomplete file(s) were preserved and marked partial."
+                        } else {
+                            "Android interrupted the previous recording. " +
+                                "The interruption was recorded in the session metadata."
+                        },
                     )
                     RecordingContract.saveSnapshot(this, snapshot)
                     render()
