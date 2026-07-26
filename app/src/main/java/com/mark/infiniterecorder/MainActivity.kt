@@ -254,8 +254,13 @@ class MainActivity : Activity() {
 
     private fun refreshStorage() {
         thread(name = "InfiniteRecorder-Storage") {
-            val bytes = runCatching { SharedStorageRepository(this).totalUsageBytes() }
+            val storage = SharedStorageRepository(this)
+            if (snapshot.state == RecorderState.IDLE) {
+                runCatching { storage.cleanupEmptyDailyMetadata() }
+            }
+            val bytes = runCatching { storage.totalUsageBytes() }
                 .getOrDefault(snapshot.storageBytes)
+            RecordingContract.updateStorageBytes(this, bytes)
             runOnUiThread {
                 snapshot = snapshot.copy(storageBytes = bytes)
                 renderStorage()

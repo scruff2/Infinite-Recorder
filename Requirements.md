@@ -7,7 +7,7 @@ Infinite-Recorder is a private, voice-focused activity journal for Android. It r
 The first version focuses on reliable capture, organization, playback, and export. Automatic transcription is a future capability and is not required for the first version.
 
 - **Primary target device:** Pixel 9a
-- **Current version:** 1.0.1 (`versionCode` 2)
+- **Current version:** 1.0.2 (`versionCode` 3)
 - **Distribution:** Personal sideloading
 - **Minimum SDK:** 26
 - **Language:** Kotlin
@@ -190,6 +190,7 @@ At approximately 64 kbps, 5 GB provides roughly 170 hours of continuously saved 
 - Mark a daily session **Unprocessed**, **Processed**, or **Keep**.
 - Delete an individual recording, a whole day, or all completed recordings only after an explicit confirmation dialog.
 - When one file is deleted but its day remains, mark that segment Deleted in the daily metadata rather than leaving it recorded as Completed.
+- When the last audio file for a day is deleted, remove both the shared daily JSON and its app-private metadata mirror so storage returns to zero and the deleted session cannot reappear.
 - Deleting a whole day removes its audio and JSON manifest.
 - Never list a pending active recording as completed or include it in a destructive bulk action.
 
@@ -211,6 +212,7 @@ Continuous cross-segment day playback and a live real-world timestamp display ar
 - If Android terminates the service or process, preserve and finalize the current file whenever technically possible and report the interruption when the app next opens.
 - If microphone access is lost, revoked, muted by the system, or fails, finalize the active segment when possible, stop recording, and prominently report the cause.
 - Persist a runtime snapshot containing recorder state, session start, pause timing, saved duration, current filename, sound level, storage use, and any error. Broadcast state changes for responsiveness and poll the snapshot while the Home screen is visible as a consistency fallback.
+- Every storage rescan and completed deletion must update the persisted storage total as well as the visible screen. A periodic runtime-state poll must not restore a stale pre-deletion value.
 - If persisted state claims recording is active but the service is no longer running, show an interruption error and begin partial-output recovery rather than displaying a false active state.
 - Resume must explicitly publish the new non-paused state; advancing audio while the UI or notification remains Paused is a failure.
 - Do not silently claim that recording continued through an interruption.
@@ -242,6 +244,7 @@ Continuous cross-segment day playback and a live real-world timestamp display ar
 - Temporarily force a one-minute segment interval and record across the boundary. Both files must finalize as independently playable audio, the microphone/encoder pipeline must remain continuous, and the first segment's audio end offset must exactly equal the second segment's audio start offset.
 - Confirm completed files appear under `Download/Infinite-Recorder/YYYY-MM-DD`, are published with `IS_PENDING=0`, and can be discovered by Files and other apps.
 - Confirm per-file playback and seeking, Open and Share intents, day sharing, processing-status changes, and confirmation dialogs for individual/day/all deletion.
+- Delete the final file for a day and verify that its shared/private metadata is removed and the Home screen reports zero managed storage without requiring an app restart.
 - Simulate or detect a stale pending output and verify that it is preserved and visibly marked partial.
 - After clean app-data reset, verify the defaults: portrait UI, 64 kbps, 60-minute segments, Medium sensitivity, silence suppression on, and a 5 GB limit.
 - Verify that the installed package does not request the Internet permission.

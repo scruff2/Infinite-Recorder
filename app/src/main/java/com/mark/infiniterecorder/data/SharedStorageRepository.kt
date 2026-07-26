@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
+import android.util.AtomicFile
 import com.mark.infiniterecorder.model.RecordingEntry
 import java.io.File
 import java.time.Instant
@@ -230,6 +231,17 @@ class SharedStorageRepository(
             resolver.delete(entry.uri, null, null) > 0
         }
 
+    fun deleteRecording(entry: RecordingEntry): Boolean {
+        if (!delete(entry)) return false
+        val dayStillHasAudio = listRecordings().any { it.day == entry.day }
+        return if (dayStillHasAudio) {
+            markRecordingDeleted(entry.day, entry.displayName)
+            true
+        } else {
+            deleteDailyMetadata(entry.day)
+        }
+    }
+
     fun recoverInterruptedOutputs(): List<String> {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return emptyList()
         val recovered = mutableListOf<String>()
@@ -378,7 +390,7 @@ class SharedStorageRepository(
                 put("sessions", org.json.JSONArray())
             }
         root.put("processingStatus", status)
-        writeDailyManifest(day, root.toString(2))
+        writeManifestCopies(day, root.toString(2))
     }
 
     fun markRecordingDeleted(day: String, displayName: String) {
@@ -398,21 +410,20 @@ class SharedStorageRepository(
                 }
             }
         }
-        writeDailyManifest(day, root.toString(2))
+        writeManifestCopies(day, root.toString(2))
     }
 
     fun deleteDay(day: String, entries: List<RecordingEntry>): Boolean {
         var success = true
         entries.forEach { if (!delete(it)) success = false }
-        dailyManifestUri(day)?.let { uri ->
-            val deleted = if (uri.scheme == "file") {
-                uri.path?.let(::File)?.delete() == true
-            } else {
-                resolver.delete(uri, null, null) > 0
-            }
-            if (!deleted) success = false
-        }
+        if (!deleteDailyMetadata(day)) success = false
         return success
+    }
+
+    fun cleanupEmptyDailyMetadata(): Int {
+        val daysWithAudio = listRecordings().mapTo(mutableSetOf()) { it.day }
+        val emptyDays = listManifestDays().filterNot(daysWithAudio::contains)
+        return emptyDays.count { deleteDailyMetadata(it) }
     }
 
     @Synchronized
@@ -426,10 +437,7 @@ class SharedStorageRepository(
         for ((day, entries) in entriesByDay) {
             if (processingStatus(day) != "Processed") continue
             entries.forEach(::delete)
-            dailyManifestUri(day)?.let {
-                if (it.scheme == "file") it.path?.let(::File)?.delete()
-                else resolver.delete(it, null, null)
-            }
+            deleteDailyMetadata(day)
             usage = totalUsageBytes()
             if (usage + requiredBytes <= SettingsRepository.MAX_STORAGE_BYTES) return
         }
@@ -437,5 +445,78 @@ class SharedStorageRepository(
             "The 5 GB recording limit cannot safely fit another segment. " +
                 "Mark older days Processed or delete recordings.",
         )
+    }
+
+    private fun writeManifestCopies(day: String, json: String) {
+        val atomicFile = AtomicFile(File(context.filesDir, "timeline-$day.json"))
+        var stream: java.io.FileOutputStream? = null
+        try {
+            stream = atomicFile.startWrite()
+            stream.write(json.toByteArray(Charsets.UTF_8))
+            stream.flush()
+            atomicFile.finishWrite(stream)
+            stream = null
+        } finally {
+            if (stream != null) atomicFile.failWrite(stream)
+        }
+        writeDailyManifest(day, json)
+    }
+
+    private fun deleteDailyMetadata(day: String): Boolean {
+        AtomicFile(File(context.filesDir, "timeline-$day.json")).delete()
+        val uri = dailyManifestUri(day) ?: return true
+        return if (uri.scheme == "file") {
+            uri.path?.let(::File)?.delete() == true
+        } else {
+            resolver.delete(uri, null, null) > 0
+        }
+    }
+
+    private fun listManifestDays(): Set<String> {
+        val privateDays = context.filesDir.listFiles()
+            .orEmpty()
+            .asSequence()
+            .filter { it.isFile && it.name.startsWith("timeline-") && it.name.endsWith(".json") }
+            .mapNotNull { Regex("""\d{4}-\d{2}-\d{2}""").find(it.name)?.value }
+            .toMutableSet()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val days = privateDays
+            resolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(
+                    MediaStore.Downloads.DISPLAY_NAME,
+                    MediaStore.Downloads.RELATIVE_PATH,
+                ),
+                "${MediaStore.Downloads.RELATIVE_PATH} LIKE ? AND " +
+                    "${MediaStore.Downloads.DISPLAY_NAME} LIKE ?",
+                arrayOf("Download/Infinite-Recorder/%", "session_%.json"),
+                null,
+            )?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(0).orEmpty()
+                    val path = cursor.getString(1).orEmpty()
+                    Regex("""\d{4}-\d{2}-\d{2}""").find(name)?.value
+                        ?.let(days::add)
+                        ?: Regex("""\d{4}-\d{2}-\d{2}""").find(path)?.value
+                            ?.let(days::add)
+                }
+            }
+            return days
+        }
+
+        @Suppress("DEPRECATION")
+        val root = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            "Infinite-Recorder",
+        )
+        root.listFiles()
+            .orEmpty()
+            .filter { directory ->
+                directory.isDirectory &&
+                    File(directory, "session_${directory.name}.json").isFile
+            }
+            .mapTo(privateDays) { it.name }
+        return privateDays
     }
 }

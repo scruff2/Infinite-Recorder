@@ -84,6 +84,8 @@ class RecordingsActivity : Activity() {
             val entries = runCatching { storage.listRecordings() }
             val failure = entries.exceptionOrNull()
             val list = entries.getOrDefault(emptyList())
+            runCatching { storage.totalUsageBytes() }
+                .onSuccess { RecordingContract.updateStorageBytes(this, it) }
             val grouped = list.groupBy { it.day }
             val newRows = buildList {
                 grouped.toSortedMap(compareByDescending { it }).forEach { (day, dayEntries) ->
@@ -193,10 +195,9 @@ class RecordingsActivity : Activity() {
                     playerPrepared = false
                 }
                 thread {
-                    val deleted = runCatching { storage.delete(entry) }.getOrDefault(false)
-                    if (deleted) {
-                        runCatching { storage.markRecordingDeleted(entry.day, entry.displayName) }
-                    }
+                    val deleted = runCatching {
+                        storage.deleteRecording(entry)
+                    }.getOrDefault(false)
                     runOnUiThread {
                         Toast.makeText(
                             this,

@@ -44,6 +44,13 @@ object RecordingContract {
             .apply()
     }
 
+    fun updateStorageBytes(context: Context, bytes: Long) {
+        context.getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(EXTRA_STORAGE_BYTES, bytes.coerceAtLeast(0L))
+            .apply()
+    }
+
     fun loadSnapshot(context: Context): RecordingSnapshot {
         val prefs = context.getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE)
         val state = runCatching {
