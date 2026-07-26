@@ -7,7 +7,7 @@ Infinite-Recorder is a private, voice-focused activity journal for Android. It r
 The first version focuses on reliable capture, organization, playback, and export. Automatic transcription is a future capability and is not required for the first version.
 
 - **Primary target device:** Pixel 9a
-- **Current version:** 1.0.2 (`versionCode` 3)
+- **Current version:** 1.0.3 (`versionCode` 4)
 - **Distribution:** Personal sideloading
 - **Minimum SDK:** 26
 - **Language:** Kotlin
@@ -63,6 +63,8 @@ The first version focuses on reliable capture, organization, playback, and expor
 - While a session is active, microphone capture and sound analysis remain active even when the app is not writing audio. The app cannot detect new sound if it completely turns off the microphone.
 - Silence suppression reduces saved file size; it does not eliminate microphone, foreground-service, or battery usage.
 - Detect sustained silence using an adaptive noise floor and configurable sensitivity rather than a single device-independent amplitude value.
+- Calibrate the initial room-noise floor for approximately one second while preserving that interval in pre-roll. Loud sound must still be detectable during calibration.
+- Require multiple active analysis frames within a short window before declaring sound. An isolated click or amplitude spike must not cause buffered quiet audio to be retained.
 - Default behavior:
   - retain approximately 2 seconds of pre-roll before detected sound;
   - continue recording through short pauses in speech;
@@ -76,6 +78,7 @@ The first version focuses on reliable capture, organization, playback, and expor
 - Provide three simple sensitivity choices—Low, Medium, and High—with Medium as the default.
 - Explain that constant background noise, fans, music, traffic, or distant conversation may prevent silence suppression from activating.
 - Provide a continuous-recording mode that disables silence suppression.
+- If a session ends without any retained PCM audio, do not publish an AAC priming-only `.m4a`; remove the empty session metadata and report zero saved audio/storage.
 
 ## File Management and Shared Storage
 
@@ -245,6 +248,8 @@ Continuous cross-segment day playback and a live real-world timestamp display ar
 - Confirm completed files appear under `Download/Infinite-Recorder/YYYY-MM-DD`, are published with `IS_PENDING=0`, and can be discovered by Files and other apps.
 - Confirm per-file playback and seeking, Open and Share intents, day sharing, processing-status changes, and confirmation dialogs for individual/day/all deletion.
 - Delete the final file for a day and verify that its shared/private metadata is removed and the Home screen reports zero managed storage without requiring an app restart.
+- Start and stop a session in a quiet room without speaking. Verify that saved duration stays zero and no `.m4a` or orphan daily metadata is published.
+- Verify with synthetic detector input that one loud frame is rejected, steady room noise is learned during calibration, and sustained speech above that floor is retained.
 - Simulate or detect a stale pending output and verify that it is preserved and visibly marked partial.
 - After clean app-data reset, verify the defaults: portrait UI, 64 kbps, 60-minute segments, Medium sensitivity, silence suppression on, and a 5 GB limit.
 - Verify that the installed package does not request the Internet permission.

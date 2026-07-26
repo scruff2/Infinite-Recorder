@@ -98,6 +98,7 @@ class AacSegmentWriter(
         if (closed) return
         lastCaptureTimeMs = captureTimeMs
         try {
+            if (totalInputSamples == 0L) return
             queueEndOfStream()
             var attempts = 0
             while (!sawEndOfStream && attempts++ < 100) {

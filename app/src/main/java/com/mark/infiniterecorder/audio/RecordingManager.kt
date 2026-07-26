@@ -192,6 +192,9 @@ class RecordingManager(
             listener.onState(RecorderState.STOPPING, "Finalizing recording")
             writer.close()
             activeTimeline.finish(System.currentTimeMillis(), writer.savedDurationMs)
+            if (writer.savedDurationMs == 0L) {
+                storage.cleanupEmptyDailyMetadata()
+            }
         } catch (throwable: Throwable) {
             failure = throwable.message ?: throwable.javaClass.simpleName
             runCatching {
