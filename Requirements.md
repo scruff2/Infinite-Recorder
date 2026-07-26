@@ -7,7 +7,7 @@ Infinite-Recorder is a private, voice-focused activity journal for Android. It r
 The first version focuses on reliable capture, organization, playback, and export. Automatic transcription is a future capability and is not required for the first version.
 
 - **Primary target device:** Pixel 9a
-- **Current version:** 1.0.3 (`versionCode` 4)
+- **Current version:** 1.1.0 (`versionCode` 5)
 - **Distribution:** Personal sideloading
 - **Minimum SDK:** 26
 - **Language:** Kotlin
@@ -29,6 +29,23 @@ The first version focuses on reliable capture, organization, playback, and expor
 - Recording continues while the screen is off or the app is not in the foreground.
 - Recording never starts automatically after boot or without explicit user action.
 - If a recording crosses local midnight, finalize the current segment and begin a new daily session so recordings remain organized by calendar day.
+
+## Pocket Safety and Control Protection
+
+- Provide **Pocket Lock**, enabled by default, to prevent incidental touches from pausing or stopping an active session.
+- When Pocket Lock is enabled:
+  - the Home-screen **Pause** and **Stop** controls require an uninterrupted press-and-hold of at least two seconds;
+  - releasing or moving outside the control before two seconds must cancel the action;
+  - completing the hold must produce haptic feedback and open a confirmation dialog;
+  - recording must continue while either confirmation dialog is displayed;
+  - only an explicit confirmation may pause or stop the session; and
+  - **Start**, **Resume**, and **Bookmark** remain immediate because they cannot silently end capture.
+- Show a prominent Home-screen indicator explaining whether Pocket Lock is on and how protected controls work.
+- Allow Pocket Lock to be disabled in Settings, with an explicit warning that Pause and Stop will then respond immediately.
+- Do not expose direct **Pause** or **Stop** service actions in the ongoing notification. Tapping the notification opens the Home screen, where Pocket Lock applies.
+- The notification may retain the non-destructive **Bookmark** action and may provide **Resume** while manually paused.
+- Recommend locking the phone with its power button after starting a session. Recording must continue while the phone is locked and the screen is off.
+- Pocket Lock protects against incidental screen and notification touches; it cannot prevent battery exhaustion, device restart, Android Force Stop, revoked microphone permission, hardware failure, or exhausted storage.
 
 ## Daily Sessions and Timeline
 
@@ -153,7 +170,7 @@ At approximately 64 kbps, 5 GB provides roughly 170 hours of continuously saved 
 - Declare the recording foreground service with the `microphone` service type.
 - Start microphone capture only from an explicit user action while the app is eligible to access the microphone.
 - Show an ongoing foreground-service notification throughout an active or paused session.
-- The notification must provide **Pause/Resume**, **Bookmark**, and **Stop** actions.
+- The notification must never provide direct **Pause** or **Stop** actions. It may provide **Bookmark** while active or paused and **Resume** while paused.
 - Do not request `READ_EXTERNAL_STORAGE`. Declare `WRITE_EXTERNAL_STORAGE` only with `maxSdkVersion="28"` for Android 8 and 9 compatibility; it must not be requested on the Pixel 9a.
 - Do not request `MANAGE_EXTERNAL_STORAGE`.
 - **No Internet permission.**
@@ -176,6 +193,7 @@ At approximately 64 kbps, 5 GB provides roughly 170 hours of continuously saved 
 - Total storage used out of the 5 GB limit
 - Estimated saved-audio time remaining at the selected bitrate
 - Prominent recording, microphone, recovery, and storage errors
+- Prominent Pocket Lock state and protected-control instructions
 - Navigation to Recordings and Settings
 - Refresh visible state from both service broadcasts and the persisted runtime snapshot so activity recreation or missed OEM broadcast delivery does not leave stale controls.
 
@@ -205,6 +223,7 @@ Continuous cross-segment day playback and a live real-world timestamp display ar
 - AAC bitrate: 32, 64, 96, or 128 kbps, defaulting to 64 kbps
 - Silence Suppression on/off, defaulting to on
 - Silence sensitivity: Low, Medium, or High
+- Pocket Lock on/off, defaulting to on
 - Display the fixed 5 GB storage limit
 - Explain retention rules and which processed recordings may be automatically deleted
 - Display a concise privacy reminder about recording nearby people
@@ -212,7 +231,9 @@ Continuous cross-segment day playback and a live real-world timestamp display ar
 ## Reliability and Error Handling
 
 - If device storage becomes full, finalize the active segment when possible, stop recording, and prominently report the error.
-- If Android terminates the service or process, preserve and finalize the current file whenever technically possible and report the interruption when the app next opens.
+- If Android terminates the service or process, preserve and finalize the current file whenever technically possible, report the interruption when the app next opens, and mark the matching daily session `Interrupted`.
+- Unexpected-termination metadata must include the detection time in UTC and local time, the last known saved-audio duration and current filename when available, a typed error entry, and an interrupted/recovery-pending state for any segment previously marked `Writing`.
+- Empty-manifest cleanup must preserve an interrupted session or a session containing errors or bookmarks even when it has no completed audio. Explicit deletion of the final recording for a day may still remove that day's metadata after confirmation.
 - If microphone access is lost, revoked, muted by the system, or fails, finalize the active segment when possible, stop recording, and prominently report the cause.
 - Persist a runtime snapshot containing recorder state, session start, pause timing, saved duration, current filename, sound level, storage use, and any error. Broadcast state changes for responsiveness and poll the snapshot while the Home screen is visible as a consistency fallback.
 - Every storage rescan and completed deletion must update the persisted storage total as well as the visible screen. A periodic runtime-state poll must not restore a stale pre-deletion value.
@@ -235,8 +256,9 @@ Continuous cross-segment day playback and a live real-world timestamp display ar
 6. `SessionTimeline` — time mapping, silence/pause intervals, bookmarks, and crash-safe daily metadata
 7. `SharedStorageRepository` — MediaStore output, indexing, partial recovery, storage accounting, retention, and deletion
 8. `RecordingsActivity` — grouped listing, per-file playback/seek, Open, Share, processing status, and confirmed deletion
-9. `SettingsRepository` — local preferences and fixed 5 GB limit
+9. `SettingsRepository` — local preferences, Pocket Lock default, and fixed 5 GB limit
 10. `SystemBarInsets` — reusable status-bar, camera-cutout, and navigation-area inset handling
+11. `PocketProtectionPolicy` — testable rules for protected Pause and Stop controls
 
 ## Version 1 Acceptance Checks
 
@@ -251,7 +273,12 @@ Continuous cross-segment day playback and a live real-world timestamp display ar
 - Start and stop a session in a quiet room without speaking. Verify that saved duration stays zero and no `.m4a` or orphan daily metadata is published.
 - Verify with synthetic detector input that one loud frame is rejected, steady room noise is learned during calibration, and sustained speech above that floor is retained.
 - Simulate or detect a stale pending output and verify that it is preserved and visibly marked partial.
-- After clean app-data reset, verify the defaults: portrait UI, 64 kbps, 60-minute segments, Medium sensitivity, silence suppression on, and a 5 GB limit.
+- With Pocket Lock on, verify that a short tap cannot pause or stop; a two-second hold opens confirmation; cancel keeps recording; and explicit confirmation performs the requested action.
+- Verify that moving outside a protected control before two seconds cancels the hold and that protected controls produce haptic feedback only after the hold completes.
+- Verify the active notification offers Bookmark but no Pause or Stop action. While paused, verify it offers Resume and Bookmark but no Stop action.
+- Lock the Pixel 9a with the power button during active capture, keep it in a pocket with the screen off, then unlock and confirm the session remained active.
+- Simulate stale active runtime state with no running service. Verify a prominent interruption error, partial-output recovery, and an `UnexpectedTermination` entry in the matching daily JSON manifest.
+- After clean app-data reset, verify the defaults: portrait UI, 64 kbps, 60-minute segments, Medium sensitivity, silence suppression on, Pocket Lock on, and a 5 GB limit.
 - Verify that the installed package does not request the Internet permission.
 
 ## Privacy

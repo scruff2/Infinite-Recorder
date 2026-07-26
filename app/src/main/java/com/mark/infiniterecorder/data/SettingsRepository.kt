@@ -21,11 +21,16 @@ class SettingsRepository(context: Context) {
         get() = prefs.getString(KEY_SENSITIVITY, DEFAULT_SENSITIVITY) ?: DEFAULT_SENSITIVITY
         set(value) = prefs.edit().putString(KEY_SENSITIVITY, value).apply()
 
+    var pocketProtection: Boolean
+        get() = prefs.getBoolean(KEY_POCKET_PROTECTION, true)
+        set(value) = prefs.edit().putBoolean(KEY_POCKET_PROTECTION, value).apply()
+
     companion object {
         private const val KEY_BITRATE = "bitrate"
         private const val KEY_SEGMENT_MINUTES = "segment_minutes"
         private const val KEY_SILENCE = "silence_suppression"
         private const val KEY_SENSITIVITY = "sensitivity"
+        private const val KEY_POCKET_PROTECTION = "pocket_protection"
         const val DEFAULT_BITRATE = 64_000
         const val DEFAULT_SEGMENT_MINUTES = 60
         const val DEFAULT_SENSITIVITY = "Medium"

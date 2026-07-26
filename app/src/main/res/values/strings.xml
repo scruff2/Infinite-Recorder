@@ -4,5 +4,5 @@
     <string name="recordings_title">Recordings</string>
     <string name="settings_title">Settings</string>
     <string name="notification_channel_name">Active recording</string>
-    <string name="notification_channel_description">Shows recording status and controls</string>
+    <string name="notification_channel_description">Shows recording status and pocket-safe controls</string>
 </resources>

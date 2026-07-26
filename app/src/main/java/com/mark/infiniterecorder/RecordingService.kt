@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import com.mark.infiniterecorder.audio.RecordingManager
+import com.mark.infiniterecorder.data.SharedStorageRepository
 import com.mark.infiniterecorder.model.RecorderState
 import com.mark.infiniterecorder.model.RecordingSnapshot
 import kotlin.concurrent.thread
@@ -31,11 +32,25 @@ class RecordingService : Service(), RecordingManager.Listener {
         createNotificationChannel()
         snapshot = RecordingContract.loadSnapshot(this)
         if (snapshot.state !in setOf(RecorderState.IDLE, RecorderState.ERROR)) {
+            val interruptedSnapshot = snapshot
             snapshot = snapshot.copy(
                 state = RecorderState.ERROR,
                 error = "A previous recording ended unexpectedly.",
             )
             publish(force = true)
+            thread(name = "InfiniteRecorder-Recovery") {
+                val storage = SharedStorageRepository(this)
+                runCatching {
+                    storage.markSessionInterrupted(
+                        sessionStartedAtMs = interruptedSnapshot.sessionStartedAtMs,
+                        detectedAtMs = System.currentTimeMillis(),
+                        savedAudioDurationMs = interruptedSnapshot.savedAudioDurationMs,
+                        currentFile = interruptedSnapshot.currentFile,
+                        message = "Android terminated the recording service unexpectedly.",
+                    )
+                }
+                runCatching { storage.recoverInterruptedOutputs() }
+            }
         }
     }
 
@@ -229,14 +244,6 @@ class RecordingService : Service(), RecordingManager.Listener {
                     REQUEST_RESUME,
                 ),
             )
-        } else if (snapshot.state in ACTIVE_STATES) {
-            builder.addAction(
-                notificationAction(
-                    "Pause",
-                    RecordingContract.ACTION_PAUSE,
-                    REQUEST_PAUSE,
-                ),
-            )
         }
         if (snapshot.state in ACTIVE_STATES || snapshot.state == RecorderState.PAUSED) {
             builder.addAction(
@@ -244,13 +251,6 @@ class RecordingService : Service(), RecordingManager.Listener {
                     "Bookmark",
                     RecordingContract.ACTION_BOOKMARK,
                     REQUEST_BOOKMARK,
-                ),
-            )
-            builder.addAction(
-                notificationAction(
-                    "Stop",
-                    RecordingContract.ACTION_STOP,
-                    REQUEST_STOP,
                 ),
             )
         }
@@ -329,10 +329,8 @@ class RecordingService : Service(), RecordingManager.Listener {
 
         private const val CHANNEL_ID = "active_recording"
         private const val NOTIFICATION_ID = 4101
-        private const val REQUEST_PAUSE = 11
         private const val REQUEST_RESUME = 12
         private const val REQUEST_BOOKMARK = 13
-        private const val REQUEST_STOP = 14
         private val ACTIVE_STATES = setOf(
             RecorderState.PREPARING,
             RecorderState.LISTENING,
